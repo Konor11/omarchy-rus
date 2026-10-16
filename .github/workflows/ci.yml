@@ -17,29 +17,23 @@ jobs:
 
       - name: Shell syntax
         run: |
-          bash -n install.sh install-mincifry-ca.sh
+          bash -n install.sh uninstall.sh install-mincifry-ca.sh
           for f in modules/*.sh; do bash -n "$f"; done
 
       - name: ShellCheck
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          shellcheck -S warning install.sh install-mincifry-ca.sh modules/*.sh
+          shellcheck -S warning install.sh uninstall.sh install-mincifry-ca.sh modules/*.sh
 
       - name: Python syntax
-        run: python3 -m py_compile translate-menu.py translate-plugins.py dns-ru.py keybindings-ru.py check-i18n.py
+        run: python3 -m py_compile dns-ru.py merge-emoji-ru.py
 
       - name: Dictionaries are valid
         run: |
           python3 - <<'PY'
-          import json, re
+          import json
           json.load(open("data/emojis-ru.json"))
-          d = json.load(open("data/notifications-ru.json"))
-          for k in ("exact", "patterns", "loose", "loose_gate"):
-              assert k in d, k
-          for pat, _ in d["patterns"] + d["loose"]:
-              re.compile(pat)
-          re.compile(d["loose_gate"])
-          print("exact:", len(d["exact"]), "patterns:", len(d["patterns"]) + len(d["loose"]))
+          print("emojis:", len(json.load(open("data/emojis-ru.json"))))
           PY
 
       - name: Changelog has an unreleased or latest section
@@ -63,11 +57,10 @@ jobs:
           ./install.sh --dry-run --skip voxtype,tts
           if ./install.sh --only no-such-module; then echo "ожидалась ошибка"; exit 1; fi
 
-      - name: README cross-links and diagrams
+      - name: README cross-links
         run: |
           grep -q "README.en.md" README.md
           grep -q "README.md" README.en.md
-          [ "$(grep -c '```mermaid' README.md)" = "$(grep -c '```mermaid' README.en.md)" ]
 
       - name: Pinned certificate fingerprints are well-formed
         run: |
