@@ -22,7 +22,7 @@ fi
 # 2. Геокодинг open-meteo: language=en → language=ru
 # В апстриме Omarchy это захардкожено; патчим клон плагина.
 python3 - "$RUS_DIR" <<'PY'
-import subprocess, sys
+import json, shutil, subprocess, sys
 from pathlib import Path
 rus_dir = Path(sys.argv[1])
 user = subprocess.check_output(["whoami"], text=True).strip()
@@ -32,12 +32,36 @@ panel = clone / "Panel.qml"
 
 # Клонируем плагин, если клона нет
 if not clone.exists():
+    # Сначала штатный clone (нужен живой шелл)
     r = subprocess.run(["omarchy", "plugin", "clone", "omarchy.weather"],
                        capture_output=True, text=True)
     if r.returncode != 0 or not clone.exists():
-        print(f"weather: не удалось клонировать плагин: {r.stderr.strip()}", file=sys.stderr)
-        sys.exit(0)
-    print("weather: плагин склонирован")
+        # Fallback: ручное копирование
+        print("weather: omarchy plugin clone не сработал, копирую вручную")
+        src = None
+        for d in ["/usr/share/omarchy/shell/plugins/panels/weather",
+                  "/usr/lib/omarchy/shell/plugins/panels/weather"]:
+            if Path(d).exists():
+                src = Path(d); break
+        if not src:
+            r2 = subprocess.run(["omarchy", "path"], capture_output=True, text=True)
+            if r2.returncode == 0:
+                src = Path(r2.stdout.strip()) / "shell/plugins/panels/weather"
+        if not src or not src.exists():
+            print("weather: исходный плагин weather не найден", file=sys.stderr)
+            sys.exit(0)
+        clone.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(src, clone, dirs_exist_ok=True)
+        manifest = clone / "manifest.json"
+        if manifest.exists():
+            m = json.loads(manifest.read_text())
+            m["id"] = f"{user}.weather"
+            m["name"] = "My Weather"
+            m.setdefault("omarchy", {})["clonedFrom"] = "omarchy.weather"
+            manifest.write_text(json.dumps(m, ensure_ascii=False, indent=2))
+        print("weather: плагин скопирован вручную")
+    else:
+        print("weather: плагин склонирован")
 
 # Проверяем, не патчили ли уже
 if panel.exists():

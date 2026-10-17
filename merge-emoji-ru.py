@@ -27,13 +27,40 @@ def ensure_clone() -> Path | None:
     target = PLUGINS_DIR / f"{USER}.emojis"
     if target.exists():
         return target
+    # Сначала пробуем штатный clone (нужен живой шелл для IPC)
     r = subprocess.run(["omarchy", "plugin", "clone", "omarchy.emojis"],
                        capture_output=True, text=True)
-    if r.returncode != 0 or not target.exists():
-        print(f"merge-emoji-ru: не удалось клонировать плагин emojis: {r.stderr.strip()}",
-              file=sys.stderr)
+    if r.returncode == 0 and target.exists():
+        print("merge-emoji-ru: плагин emojis склонирован")
+        return target
+    # Fallback: копируем вручную
+    print(f"merge-emoji-ru: omarchy plugin clone не сработал, копирую вручную")
+    import shutil
+    src = None
+    for d in ["/usr/share/omarchy/shell/plugins/emojis",
+              "/usr/lib/omarchy/shell/plugins/emojis"]:
+        if Path(d).exists():
+            src = Path(d)
+            break
+    if not src:
+        r2 = subprocess.run(["omarchy", "path"], capture_output=True, text=True)
+        if r2.returncode == 0:
+            src = Path(r2.stdout.strip()) / "shell/plugins/emojis"
+    if not src or not src.exists():
+        print(f"merge-emoji-ru: исходный плагин emojis не найден", file=sys.stderr)
         return None
-    print("merge-emoji-ru: плагин emojis склонирован")
+    target.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(src, target, dirs_exist_ok=True)
+    # Правим manifest
+    manifest = target / "manifest.json"
+    if manifest.exists():
+        import json as _json
+        m = _json.loads(manifest.read_text())
+        m["id"] = f"{USER}.emojis"
+        m["name"] = "My Emojis"
+        m.setdefault("omarchy", {})["clonedFrom"] = "omarchy.emojis"
+        manifest.write_text(_json.dumps(m, ensure_ascii=False, indent=2))
+    print(f"merge-emoji-ru: плагин emojis скопирован вручную")
     return target
 
 
