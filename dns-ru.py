@@ -110,7 +110,7 @@ def block_end(text: str, start: int) -> int:
 
 def patch_panel() -> None:
     if not PANEL.exists():
-        die(f"{PANEL} не найден: сначала склонируйте плагин (translate-plugins.py network)")
+        die(f"{PANEL} не найден: сначала склонируйте плагин (omarchy plugin clone omarchy.network)")
     t = PANEL.read_text()
     names = ["DHCP"] + [p["name"] for p in PROVIDERS] + ["Custom"]
 

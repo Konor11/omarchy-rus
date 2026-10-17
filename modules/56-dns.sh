@@ -5,8 +5,13 @@
 # sudo: yes
 # desc: пилюли DNS в панели сети + root-helper /usr/local/bin/omarchy-dns-ru (смена DNS — через polkit-диалог)
 set -euo pipefail
-# 1. клон виджета сети (стоковый править нельзя)
-"$RUS_DIR/translate-plugins.py" network
+USER=$(whoami)
+NETWORK_CLONE="$HOME/.config/omarchy/plugins/$USER.network"
+
+# 1. Клон виджета сети (стоковый править нельзя)
+if [ ! -d "$NETWORK_CLONE" ]; then
+  omarchy plugin clone omarchy.network || { echo "dns: не удалось клонировать плагин network" >&2; exit 1; }
+fi
 # 2. helper: копия стокового omarchy-dns с новыми провайдерами; ставится от root, чтобы его
 #    нельзя было подменить без пароля (он исполняется от root после подтверждения)
 tmp=$(mktemp)
