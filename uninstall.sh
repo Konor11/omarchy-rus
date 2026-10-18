@@ -55,6 +55,7 @@ usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; }
 say()  { printf '%s\n' "$*"; }
 done_msg() { printf '  ✓ %s\n' "$*"; }
 skip_msg() { printf '  · %s (не найдено)\n' "$*"; }
+fail_msg() { printf '  ✗ %s\n' "$*"; }
 
 rm_safe() {
   if [ -e "$1" ] || [ -L "$1" ]; then
@@ -65,24 +66,20 @@ rm_safe() {
   fi
 }
 
-# --- 1. Клоны плагинов ---
+# --- 1. Удаление клонов плагинов (без re-enable — это позже) ---
 remove_plugin_clones() {
-  say "Клоны плагинов бара:"
+  say "Удаление клонов плагинов:"
   local removed=0
   for name in "${CLONED_PLUGINS[@]}"; do
     local clone="$PLUGINS_DIR/$USER.$name"
-    local orig="omarchy.$name"
     if [ -d "$clone" ]; then
-      if [ "$DRY" = 0 ]; then
-        rm -rf -- "$clone"
-        # Возвращаем оригинальный плагин
-        omarchy plugin enable "$orig" 2>/dev/null || true
-      fi
-      done_msg "клон $USER.$name удалён, оригинал $orig включён"
+      if [ "$DRY" = 0 ]; then rm -rf -- "$clone"; fi
+      done_msg "клон $USER.$name удалён"
       removed=$((removed + 1))
     fi
   done
   [ "$removed" = 0 ] && skip_msg "клоны плагинов не найдены"
+  CLONES_REMOVED=$removed
 }
 
 # --- 2. Расширение меню ---
@@ -104,10 +101,8 @@ remove_keybindings() {
   rm_safe "$LOCAL_BIN/omarchy-menu-tmux-keybindings-ru"
   rm_safe "$LOCAL_BIN/omarchy-menu-herdr-keybindings-ru"
 
-  # Патч bindings.lua: удаляем блок между маркерами
   if [ -f "$BINDINGS" ] && grep -qF "$MARK_KB_BEGIN" "$BINDINGS" 2>/dev/null; then
     if [ "$DRY" = 0 ]; then
-      # Вырезаем блок от MARK_KB_BEGIN до MARK_KB_END включительно
       local tmp
       tmp=$(mktemp)
       awk -v b="$MARK_KB_BEGIN" -v e="$MARK_KB_END" '
@@ -139,9 +134,7 @@ remove_installed_scripts() {
 remove_dns_helper() {
   say "DNS-хелпер:"
   if [ -f "$DNS_HELPER" ]; then
-    if [ "$DRY" = 0 ]; then
-      sudo rm -f -- "$DNS_HELPER"
-    fi
+    if [ "$DRY" = 0 ]; then sudo rm -f -- "$DNS_HELPER"; fi
     done_msg "$DNS_HELPER удалён (sudo)"
   else
     skip_msg "$DNS_HELPER"
@@ -153,7 +146,6 @@ remove_fastfetch() {
   say "Конфиг fastfetch:"
   local f="$HOME/.config/fastfetch/config.jsonc"
   if [ -f "$f" ] && grep -qF "$MARK_FF" "$f" 2>/dev/null; then
-    # Ищем бэкап
     local backup
     backup=$(ls -t "$f.bak."* 2>/dev/null | head -1)
     if [ -n "$backup" ]; then
@@ -168,24 +160,18 @@ remove_fastfetch() {
   fi
 }
 
-# --- 8. Сертификаты Минцифры (sudo, только --purge или если ставились) ---
+# --- 8. Сертификаты Минцифры ---
 remove_mincifry() {
   say "Сертификаты Минцифры:"
-  local script="$LOCAL_SHARE/install-mincifry-ca.sh"
   local found=0
-
-  # Проверяем, ставились ли сертификаты
   if ls /usr/share/ca-certificates/trust-source/anchors/mincifry* 1>/dev/null 2>&1 || \
      ls /etc/ca-certificates/trust-source/anchors/mincifry* 1>/dev/null 2>&1; then
     found=1
   fi
-
   if [ "$found" = 1 ] || [ "$PURGE" = 1 ]; then
-    # Пытаемся использовать скрипт из репозитория, потом из установленной копии
     local mincifry_script
     mincifry_script="$(dirname "$(readlink -f "$0")")/install-mincifry-ca.sh"
     [ -x "$mincifry_script" ] || mincifry_script="$LOCAL_SHARE/install-mincifry-ca.sh"
-
     if [ -x "$mincifry_script" ]; then
       if [ "$DRY" = 0 ]; then
         sudo "$mincifry_script" --remove 2>/dev/null || true
@@ -200,19 +186,52 @@ remove_mincifry() {
   fi
 }
 
-# --- 9. Перезапуск шелла ---
-restart_shell() {
-  if [ "$DRY" = 0 ]; then
-    say "Перезапуск шелла Omarchy…"
-    omarchy restart shell 2>/dev/null || true
+# --- 9. Перезапуск шелла и re-enable оригинальных плагинов ---
+# КРИТИЧНО: шелл должен быть жив, чтобы omarchy plugin enable сработал.
+# Поэтому сначала перезапускаем, ждём, потом включаем.
+reenable_plugins() {
+  if [ "$DRY" = 1 ]; then return 0; fi
+  if [ "${CLONES_REMOVED:-0}" = 0 ]; then return 0; fi
+
+  say ""
+  say "Перезапуск шелла Omarchy (нужно для re-enable плагинов)…"
+  omarchy restart shell 2>/dev/null || true
+
+  # Ждём, пока шелл поднимется (до 15 секунд)
+  local i
+  for i in $(seq 1 30); do
+    if omarchy plugin list >/dev/null 2>&1; then break; fi
+    sleep 0.5
+  done
+
+  say "Включение оригинальных плагинов:"
+  local enabled=0 failed=0
+  for name in "${CLONED_PLUGINS[@]}"; do
+    local orig="omarchy.$name"
+    # Проверяем, disabled ли оригинал
+    local state
+    state=$(omarchy plugin list 2>/dev/null | grep "^$orig " | awk '{print $2}')
+    if [ "$state" = "disabled" ]; then
+      if omarchy plugin enable "$orig" 2>/dev/null; then
+        done_msg "$orig включён"
+        enabled=$((enabled + 1))
+      else
+        fail_msg "$orig: не удалось включить (попробуйте вручную: omarchy plugin enable $orig)"
+        failed=$((failed + 1))
+      fi
+    fi
+  done
+
+  if [ "$failed" -gt 0 ]; then
+    say ""
+    say "⚠ $failed плагинов не включились. Проверьте и включите вручную:"
+    say "  omarchy plugin list | grep disabled"
   fi
 }
 
-# --- --purge: локаль, пакеты, раскладка ---
+# --- --purge ---
 purge_system() {
   say "Полный снос (--purge):"
-
-  # Пакеты
   say "  Удаление пакетов:"
   local pkg
   for pkg in "${PURGE_PACKAGES[@]}"; do
@@ -224,14 +243,12 @@ purge_system() {
     fi
   done
 
-  # Локаль: возвращаем LANG=C
   local env_file="$HOME/.config/uwsm/env.d/50-omarchy-language"
   if [ -f "$env_file" ]; then
     rm_safe "$env_file"
     done_msg "LANG возвращён к умолчанию"
   fi
 
-  # Раскладка: убираем us,ru из input.lua (оставляем только us)
   local input_lua="$HOME/.config/hypr/input.lua"
   if [ -f "$input_lua" ] && grep -q "us,ru" "$input_lua" 2>/dev/null; then
     if [ "$DRY" = 0 ]; then
@@ -243,26 +260,18 @@ purge_system() {
     skip_msg "раскладка (не us,ru или отсутствует)"
   fi
 
-  # VConsole
   if [ -f "/etc/vconsole.conf" ] && grep -q "LatArCyrHeb" /etc/vconsole.conf 2>/dev/null; then
-    if [ "$DRY" = 0 ]; then
-      sudo sed -i 's/FONT=.*/FONT=/g' /etc/vconsole.conf
-    fi
+    if [ "$DRY" = 0 ]; then sudo sed -i 's/FONT=.*/FONT=/g' /etc/vconsole.conf; fi
     done_msg "шрифт TTY сброшен"
   fi
 
-  # XCompose
-  # Не удаляем — пользователь мог сам писать туда. Только сообщаем.
   if [ -f "$HOME/.XCompose" ]; then
     say "  .XCompose: оставлен (проверьте вручную, если нужно)"
   fi
 
-  # Язык Omarchy: сбрасываем на en
   local lang_file="$HOME/.config/omarchy/language"
   if [ -f "$lang_file" ]; then
-    if [ "$DRY" = 0 ]; then
-      echo "en" > "$lang_file"
-    fi
+    if [ "$DRY" = 0 ]; then echo "en" > "$lang_file"; fi
     done_msg "язык Omarchy сброшен на en"
   fi
 }
@@ -281,6 +290,8 @@ done
 say "Откат omarchy-rus для пользователя: $USER"
 [ "$DRY" = 1 ] && say "РЕЖИМ: dry-run (ничего не удаляется)"
 say ""
+
+CLONES_REMOVED=0
 
 remove_plugin_clones
 echo
@@ -303,8 +314,8 @@ if [ "$PURGE" = 1 ]; then
   purge_system
 fi
 
-echo
-restart_shell
+# Перезапуск шелла и re-enable плагинов — в самом конце, после удаления всего
+reenable_plugins
 
 echo
 say "Откат завершён."
@@ -319,6 +330,3 @@ say "  • часовой пояс, voxtype, TTS"
 say "  • язык Omarchy (~/.config/omarchy/language)"
 say ""
 say "Для полного сноса: ./uninstall.sh --purge"
-say ""
-say "Теперь можно установить свежую версию omarchy-rus или просто:"
-say "  omarchy language ru"
