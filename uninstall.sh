@@ -186,7 +186,101 @@ remove_mincifry() {
   fi
 }
 
-# --- 9. Перезапуск шелла и re-enable оригинальных плагинов ---
+# --- 9. Остатки в Lua-конфигах и других конфигах ---
+remove_config_remnants() {
+  say "Остатки в конфигурационных файлах:"
+
+  # input.lua: блоки layouts, touchpad scroll, touchpad gestures
+  local input_lua="$HOME/.config/hypr/input.lua"
+  if [ -f "$input_lua" ] && grep -q "omarchy-rus" "$input_lua" 2>/dev/null; then
+    if [ "$DRY" = 0 ]; then
+      local tmp
+      tmp=$(mktemp)
+      # Удаляем все строки от маркера -- omarchy-rus до конца блока hl.config({...})
+      awk '
+        /^-- omarchy-rus/ { skip=1 }
+        skip && /^hl\.config\(/ { depth=0; brace=1; next }
+        skip && brace {
+          if (/\{/) depth++
+          if (/\}/) { depth--; if (depth<=0) { skip=0; brace=0; next } }
+          next
+        }
+        skip && /^\)\s*$/ { skip=0; next }
+        !skip { print }
+      ' "$input_lua" > "$tmp" && mv "$tmp" "$input_lua"
+      hyprctl reload 2>/dev/null || true
+    fi
+    done_msg "блоки omarchy-rus удалены из input.lua"
+  else
+    skip_msg "input.lua (чист)"
+  fi
+
+  # ~/.XCompose: блок между # >>> omarchy-rus и # <<< omarchy-rus
+  local xcompose="$HOME/.XCompose"
+  if [ -f "$xcompose" ] && grep -q "omarchy-rus" "$xcompose" 2>/dev/null; then
+    if [ "$DRY" = 0 ]; then
+      local tmp
+      tmp=$(mktemp)
+      awk '/^# >>> omarchy-rus/{skip=1} /^# <<< omarchy-rus/{skip=0;next} !skip' "$xcompose" > "$tmp" \
+        && mv "$tmp" "$xcompose"
+    fi
+    done_msg "блок omarchy-rus удалён из .XCompose"
+  else
+    skip_msg ".XCompose (чист)"
+  fi
+
+  # Browser flags: строки после # omarchy-rus: language
+  local changed=0
+  for flags in chromium brave chrome; do
+    local f="$HOME/.config/$flags-flags.conf"
+    if [ -f "$f" ] && grep -q "omarchy-rus: language" "$f" 2>/dev/null; then
+      if [ "$DRY" = 0 ]; then
+        local tmp
+        tmp=$(mktemp)
+        awk '/^# omarchy-rus: language/{skip=1} skip && /^--lang=|^--accept-lang=/{next} !skip{print} skip && !/^--lang=|^--accept-lang=|^# omarchy-rus/{skip=0}' "$f" > "$tmp" \
+          && mv "$tmp" "$f"
+      fi
+      done_msg "флаги omarchy-rus удалены из $flags-flags.conf"
+      changed=1
+    fi
+  done
+  [ "$changed" = 0 ] && skip_msg "browser flags (чист)"
+
+  # systemd timesyncd
+  if [ -f "/etc/systemd/timesyncd.conf.d/10-omarchy-rus.conf" ]; then
+    if [ "$DRY" = 0 ]; then sudo rm -f -- "/etc/systemd/timesyncd.conf.d/10-omarchy-rus.conf"; fi
+    done_msg "/etc/systemd/timesyncd.conf.d/10-omarchy-rus.conf удалён (sudo)"
+  else
+    skip_msg "timesyncd config"
+  fi
+
+  # speech-dispatcher
+  local speechd="$HOME/.config/speech-dispatcher/speechd.conf"
+  if [ -f "$speechd" ] && grep -q "omarchy-rus" "$speechd" 2>/dev/null; then
+    if [ "$DRY" = 0 ]; then
+      local tmp
+      tmp=$(mktemp)
+      awk '/^# omarchy-rus/{skip=1} skip{next} !skip{print}' "$speechd" > "$tmp" \
+        && mv "$tmp" "$speechd"
+    fi
+    done_msg "блок omarchy-rus удалён из speechd.conf"
+  else
+    skip_msg "speechd.conf (чист)"
+  fi
+
+  # Piper config
+  local piper="$HOME/.config/piper/piper.conf"
+  if [ -f "$piper" ] && grep -q "omarchy-rus" "$piper" 2>/dev/null; then
+    if [ "$DRY" = 0 ]; then
+      sed -i '/omarchy-rus/d' "$piper"
+    fi
+    done_msg "строки omarchy-rus удалены из piper.conf"
+  else
+    skip_msg "piper.conf (чист)"
+  fi
+}
+
+# --- 10. Перезапуск шелла и re-enable оригинальных плагинов ---
 # КРИТИЧНО: шелл должен быть жив, чтобы omarchy plugin enable сработал.
 # Поэтому сначала перезапускаем, ждём, потом включаем.
 reenable_plugins() {
@@ -308,6 +402,8 @@ echo
 remove_fastfetch
 echo
 remove_mincifry
+echo
+remove_config_remnants
 
 if [ "$PURGE" = 1 ]; then
   echo
